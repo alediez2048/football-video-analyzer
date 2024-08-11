@@ -8,101 +8,105 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def process_video(file_path):
-    model = YOLO('yolov8x.pt')
-    cap = cv2.VideoCapture(file_path)
-    
-    frames_processed = 0
-    detections = []
-    tracked_objects = {}
-    next_id = 1
-    jersey_colors = []
-    team_colors = None
+    try:
+        model = YOLO('yolov8x.pt')
+        cap = cv2.VideoCapture(file_path)
+        
+        frames_processed = 0
+        detections = []
+        tracked_objects = {}
+        next_id = 1
+        jersey_colors = []
+        team_colors = None
 
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-        results = model(frame)
+            results = model(frame)
 
-        frame_detections = []
-        current_objects = {}
+            frame_detections = []
+            current_objects = {}
 
-        for r in results:
-            boxes = r.boxes.xyxy.cpu().numpy()
-            classes = r.boxes.cls.cpu().numpy()
-            confs = r.boxes.conf.cpu().numpy()
+            for r in results:
+                boxes = r.boxes.xyxy.cpu().numpy()
+                classes = r.boxes.cls.cpu().numpy()
+                confs = r.boxes.conf.cpu().numpy()
 
-            for box, cls, conf in zip(boxes, classes, confs):
-                object_type = model.names[int(cls)]
-                
-                if object_type in ['person', 'sports ball']:
-                    # Try to match with existing tracked objects
-                    matched = False
-                    for obj_id, obj in tracked_objects.items():
-                        if obj['type'] == object_type and iou(box, obj['box']) > 0.3:
-                            current_objects[obj_id] = {
+                for box, cls, conf in zip(boxes, classes, confs):
+                    object_type = model.names[int(cls)]
+                    
+                    if object_type in ['person', 'sports ball']:
+                        # Try to match with existing tracked objects
+                        matched = False
+                        for obj_id, obj in tracked_objects.items():
+                            if obj['type'] == object_type and iou(box, obj['box']) > 0.3:
+                                current_objects[obj_id] = {
+                                    'type': object_type,
+                                    'box': box.tolist(),
+                                    'confidence': float(conf)
+                                }
+                                if 'team' in obj:
+                                    current_objects[obj_id]['team'] = obj['team']
+                                matched = True
+                                break
+                        
+                        # If no match, create a new tracked object
+                        if not matched:
+                            new_id = next_id
+                            next_id += 1
+                            current_objects[new_id] = {
                                 'type': object_type,
                                 'box': box.tolist(),
                                 'confidence': float(conf)
                             }
-                            if 'team' in obj:
-                                current_objects[obj_id]['team'] = obj['team']
-                            matched = True
-                            break
-                    
-                    # If no match, create a new tracked object
-                    if not matched:
-                        new_id = next_id
-                        next_id += 1
-                        current_objects[new_id] = {
-                            'type': object_type,
-                            'box': box.tolist(),
-                            'confidence': float(conf)
-                        }
-                        
-                        # Extract jersey color
-                        if object_type == 'person':
-                            jersey_color = extract_jersey_color(frame, box)
-                            jersey_colors.append(jersey_color)
+                            
+                            # Extract jersey color
+                            if object_type == 'person':
+                                jersey_color = extract_jersey_color(frame, box)
+                                jersey_colors.append(jersey_color)
 
-        # Perform team assignment if we have enough jersey colors
-        if len(jersey_colors) >= 10 and team_colors is None:
-            team_colors = KMeans(n_clusters=2, random_state=42).fit(jersey_colors)
-        
-        # Assign teams to players
-        if team_colors is not None:
-            for obj_id, obj in current_objects.items():
-                if obj['type'] == 'person' and 'team' not in obj:
-                    jersey_color = extract_jersey_color(frame, obj['box'])
-                    team = team_colors.predict([jersey_color])[0]
-                    obj['team'] = int(team)
+            # Perform team assignment if we have enough jersey colors
+            if len(jersey_colors) >= 10 and team_colors is None:
+                team_colors = KMeans(n_clusters=2, random_state=42).fit(jersey_colors)
+            
+            # Assign teams to players
+            if team_colors is not None:
+                for obj_id, obj in current_objects.items():
+                    if obj['type'] == 'person' and 'team' not in obj:
+                        jersey_color = extract_jersey_color(frame, obj['box'])
+                        team = team_colors.predict([jersey_color])[0]
+                        obj['team'] = int(team)
 
-        tracked_objects = current_objects
-        frame_detections = list(current_objects.values())
+            tracked_objects = current_objects
+            frame_detections = list(current_objects.values())
 
-        detections.append({
-            'frame': frames_processed,
-            'detections': frame_detections
-        })
+            detections.append({
+                'frame': frames_processed,
+                'detections': frame_detections
+            })
 
-        frames_processed += 1
-        if frames_processed % 100 == 0:
-            logger.info(f"Processed {frames_processed} frames")
+            frames_processed += 1
+            if frames_processed % 100 == 0:
+                logger.info(f"Processed {frames_processed} frames")
 
-    cap.release()
+        cap.release()
 
-    logger.info(f"Total frames processed: {frames_processed}")
-    logger.info(f"Total detections: {sum(len(frame['detections']) for frame in detections)}")
+        logger.info(f"Total frames processed: {frames_processed}")
+        logger.info(f"Total detections: {sum(len(frame['detections']) for frame in detections)}")
 
-    events = detect_events(detections)
+        events = detect_events(detections)
 
-    return {
-        'total_frames': frames_processed,
-        'detections': detections,
-        'events': events,
-        'field_dimensions': {'width': 105, 'height': 68}  # in meters
-    }
+        return {
+            'total_frames': frames_processed,
+            'detections': detections,
+            'events': events,
+            'field_dimensions': {'width': 105, 'height': 68}  # in meters
+        }
+    except Exception as e:
+        logger.error(f"Error in process_video: {str(e)}", exc_info=True)
+        raise
 
 def detect_events(detections):
     events = []

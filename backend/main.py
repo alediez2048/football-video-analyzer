@@ -6,6 +6,10 @@ import os
 from video_processor import process_video
 from fastapi.responses import FileResponse
 import asyncio
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -33,15 +37,12 @@ async def process_video_endpoint(filename: str):
         return {"message": "File not found"}
     
     try:
-        # Try to use asyncio if available
         results = await asyncio.wait_for(asyncio.to_thread(process_video, file_path), timeout=300)  # 5 minutes timeout
-    except AttributeError:
-        # If asyncio.to_thread is not available, fall back to synchronous execution
-        results = process_video(file_path)
     except asyncio.TimeoutError:
+        logger.error("Video processing timed out")
         return {"message": "Video processing timed out"}
     except Exception as e:
-        logger.error(f"Error processing video: {str(e)}")
+        logger.error(f"Error processing video: {str(e)}", exc_info=True)
         return {"message": f"Error processing video: {str(e)}"}
     
     return {"message": f"Processed video: {filename}", "results": results}

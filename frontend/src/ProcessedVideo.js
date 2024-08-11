@@ -1,21 +1,13 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect } from 'react';
 
 const ProcessedVideo = ({ videoUrl, detections }) => {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
-  const [videoDimensions, setVideoDimensions] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
-
-    const updateCanvasSize = () => {
-      const videoRect = video.getBoundingClientRect();
-      canvas.width = videoRect.width;
-      canvas.height = videoRect.height;
-      setVideoDimensions({ width: videoRect.width, height: videoRect.height });
-    };
 
     const drawDetections = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -29,22 +21,21 @@ const ProcessedVideo = ({ videoUrl, detections }) => {
 
         currentFrame.detections.forEach(detection => {
           const [x1, y1, x2, y2] = detection.box;
-          const centerX = ((x1 + x2) / 2) * scaleX;
-          const bottomY = y2 * scaleY;
-          const radius = 5; // Adjust this value to change circle size
+          const width = (x2 - x1) * scaleX;
+          const height = (y2 - y1) * scaleY;
 
-          ctx.beginPath();
-          ctx.arc(centerX, bottomY, radius, 0, 2 * Math.PI);
-          ctx.fillStyle = detection.type === 'sports ball' ? 'red' : 'green';
-          ctx.fill();
+          // Draw bounding box
+          ctx.strokeStyle = detection.type === 'sports ball' ? 'red' : 'green';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(x1 * scaleX, y1 * scaleY, width, height);
 
+          // Draw label
           ctx.fillStyle = 'white';
           ctx.font = '12px Arial';
-          ctx.textAlign = 'center';
           ctx.fillText(
-            `${detection.type} ${Math.round(detection.confidence * 100)}%`, 
-            centerX, 
-            bottomY > canvas.height - 20 ? bottomY - 10 : bottomY + 20
+            `${detection.type} ${detection.team !== undefined ? detection.team : ''}`, 
+            x1 * scaleX, 
+            y1 * scaleY > 20 ? y1 * scaleY - 5 : y1 * scaleY + 20
           );
         });
       }
@@ -53,21 +44,20 @@ const ProcessedVideo = ({ videoUrl, detections }) => {
     };
 
     const handlePlay = () => {
-      updateCanvasSize();
+      canvas.width = video.clientWidth;
+      canvas.height = video.clientHeight;
       drawDetections();
     };
 
     video.addEventListener('play', handlePlay);
-    window.addEventListener('resize', updateCanvasSize);
 
     return () => {
       video.removeEventListener('play', handlePlay);
-      window.removeEventListener('resize', updateCanvasSize);
     };
   }, [videoUrl, detections]);
 
   return (
-    <div style={{ position: 'relative', width: 'fit-content' }}>
+    <div style={{ position: 'relative' }}>
       <video 
         ref={videoRef} 
         src={videoUrl} 
@@ -80,8 +70,7 @@ const ProcessedVideo = ({ videoUrl, detections }) => {
           position: 'absolute', 
           top: 0, 
           left: 0, 
-          width: `${videoDimensions.width}px`, 
-          height: `${videoDimensions.height}px` 
+          pointerEvents: 'none' 
         }} 
       />
     </div>
