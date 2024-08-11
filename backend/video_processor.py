@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 def process_video(file_path):
     # Load YOLO model
-    model = YOLO('yolov8n.pt')
+    model = YOLO('yolov8x.pt')
 
     # Open the video file
     cap = cv2.VideoCapture(file_path)
