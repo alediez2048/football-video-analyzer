@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 import logging
+from sklearn.cluster import KMeans
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -14,6 +15,7 @@ def process_video(file_path):
     detections = []
     tracked_objects = {}
     next_id = 1
+    team_colors = None
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -43,6 +45,8 @@ def process_video(file_path):
                                 'box': box.tolist(),
                                 'confidence': float(conf)
                             }
+                            if 'team' in obj:
+                                current_objects[obj_id]['team'] = obj['team']
                             matched = True
                             break
                     
@@ -55,6 +59,14 @@ def process_video(file_path):
                             'box': box.tolist(),
                             'confidence': float(conf)
                         }
+                        
+                        # Assign team based on jersey color
+                        if object_type == 'person':
+                            jersey_color = extract_jersey_color(frame, box)
+                            if team_colors is None:
+                                team_colors = KMeans(n_clusters=2, random_state=42).fit([jersey_color])
+                            team = team_colors.predict([jersey_color])[0]
+                            current_objects[new_id]['team'] = int(team)
 
         tracked_objects = current_objects
         frame_detections = list(current_objects.values())
@@ -166,3 +178,20 @@ def iou(box1, box2):
     
     iou = intersection / float(area1 + area2 - intersection)
     return iou
+
+def extract_jersey_color(frame, box):
+    x1, y1, x2, y2 = map(int, box)
+    player_img = frame[y1:y2, x1:x2]
+    player_img = cv2.resize(player_img, (50, 50))  # Resize for consistency
+    player_img = player_img.reshape((-1, 3))
+    player_img = np.float32(player_img)
+    
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+    K = 2
+    _, label, center = cv2.kmeans(player_img, K, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+    
+    center = np.uint8(center)
+    res = center[label.flatten()]
+    dominant_color = res.reshape((50, 50, 3))
+    
+    return dominant_color[0][0]  # Return the most dominant color
