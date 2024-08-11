@@ -27,15 +27,18 @@ async def upload_video(file: UploadFile = File(...)):
 
 @app.get("/process_video/{filename}")
 async def process_video_endpoint(filename: str):
-    print(f"Received request to process video: {filename}")
     file_path = f"uploads/{filename}"
-    print(f"Checking for file at path: {file_path}")
     if not os.path.exists(file_path):
-        print(f"File not found: {file_path}")
         return {"message": "File not found"}
     
-    print("File found, starting processing...")
-    results = process_video(file_path)
+    try:
+        results = await asyncio.wait_for(asyncio.to_thread(process_video, file_path), timeout=300)  # 5 minutes timeout
+        return {"message": f"Processed video: {filename}", "results": results}
+    except asyncio.TimeoutError:
+        return {"message": "Video processing timed out"}
+    except Exception as e:
+        logger.error(f"Error processing video: {str(e)}")
+        return {"message": f"Error processing video: {str(e)}"}
     return {"message": f"Processed video: {filename}", "results": results}
 
 @app.get("/processed_video/{filename}")

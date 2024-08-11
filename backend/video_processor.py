@@ -15,6 +15,7 @@ def process_video(file_path):
     detections = []
     tracked_objects = {}
     next_id = 1
+    jersey_colors = []
     team_colors = None
 
     while cap.isOpened():
@@ -60,13 +61,22 @@ def process_video(file_path):
                             'confidence': float(conf)
                         }
                         
-                        # Assign team based on jersey color
+                        # Extract jersey color
                         if object_type == 'person':
                             jersey_color = extract_jersey_color(frame, box)
-                            if team_colors is None:
-                                team_colors = KMeans(n_clusters=2, random_state=42).fit([jersey_color])
-                            team = team_colors.predict([jersey_color])[0]
-                            current_objects[new_id]['team'] = int(team)
+                            jersey_colors.append(jersey_color)
+
+        # Perform team assignment if we have enough jersey colors
+        if len(jersey_colors) >= 10 and team_colors is None:
+            team_colors = KMeans(n_clusters=2, random_state=42).fit(jersey_colors)
+        
+        # Assign teams to players
+        if team_colors is not None:
+            for obj_id, obj in current_objects.items():
+                if obj['type'] == 'person' and 'team' not in obj:
+                    jersey_color = extract_jersey_color(frame, obj['box'])
+                    team = team_colors.predict([jersey_color])[0]
+                    obj['team'] = int(team)
 
         tracked_objects = current_objects
         frame_detections = list(current_objects.values())
