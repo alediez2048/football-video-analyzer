@@ -7,35 +7,57 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def process_video(file_path):
-    # Load YOLO model
-    model = YOLO('yolov8n.pt')
-
-    # Open the video file
+    model = YOLO('yolov8x.pt')
     cap = cv2.VideoCapture(file_path)
     
     frames_processed = 0
     detections = []
+    tracked_objects = {}
+    next_id = 1
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
 
-        # Run YOLOv8 inference on the frame
         results = model(frame)
 
         frame_detections = []
+        current_objects = {}
+
         for r in results:
             boxes = r.boxes.xyxy.cpu().numpy()
             classes = r.boxes.cls.cpu().numpy()
             confs = r.boxes.conf.cpu().numpy()
 
             for box, cls, conf in zip(boxes, classes, confs):
-                frame_detections.append({
-                    'type': model.names[int(cls)],
-                    'confidence': float(conf),
-                    'box': box.tolist()
-                })
+                object_type = model.names[int(cls)]
+                
+                if object_type in ['person', 'sports ball']:
+                    # Try to match with existing tracked objects
+                    matched = False
+                    for obj_id, obj in tracked_objects.items():
+                        if obj['type'] == object_type and iou(box, obj['box']) > 0.3:
+                            current_objects[obj_id] = {
+                                'type': object_type,
+                                'box': box.tolist(),
+                                'confidence': float(conf)
+                            }
+                            matched = True
+                            break
+                    
+                    # If no match, create a new tracked object
+                    if not matched:
+                        new_id = next_id
+                        next_id += 1
+                        current_objects[new_id] = {
+                            'type': object_type,
+                            'box': box.tolist(),
+                            'confidence': float(conf)
+                        }
+
+        tracked_objects = current_objects
+        frame_detections = list(current_objects.values())
 
         detections.append({
             'frame': frames_processed,
@@ -51,15 +73,14 @@ def process_video(file_path):
     logger.info(f"Total frames processed: {frames_processed}")
     logger.info(f"Total detections: {sum(len(frame['detections']) for frame in detections)}")
 
-    # Basic event detection
     events = detect_events(detections)
 
     return {
-    'total_frames': frames_processed,
-    'detections': detections,
-    'events': detect_events(detections),
-    'field_dimensions': {'width': 105, 'height': 68}  # in meters
-}
+        'total_frames': frames_processed,
+        'detections': detections,
+        'events': events,
+        'field_dimensions': {'width': 105, 'height': 68}  # in meters
+    }
 
 def detect_events(detections):
     events = []
@@ -131,7 +152,6 @@ def detect_events(detections):
     
     logger.info(f"Total events detected: {len(consolidated_events)}")
     return consolidated_events
-
 
 def iou(box1, box2):
     # Calculate intersection over union
