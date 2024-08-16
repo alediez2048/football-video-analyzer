@@ -2,28 +2,35 @@ from ultralytics import YOLO
 from roboflow import Roboflow
 import os
 
-# Use the correct API key from Roboflow
-rf = Roboflow(api_key="1cwGoU29yCb6DDrXfvwL")
-project = rf.workspace("FootballVideoTrackingApp").project("football-video-tracking-project")
-dataset = project.version(1).download("yolov8")
+def train_yolo_model():
+    # Initialize Roboflow
+    rf = Roboflow(api_key="1cwGoU29yCb6DDrXfvwL")
+    project = rf.workspace("roboflow-jvuqo").project("football-players-detection-3zvbc")
+    dataset = project.version(1).download("yolov8")
 
-# Load a pretrained YOLOv8 model
-model = YOLO('yolov8n.pt')
+    # Print dataset location for verification
+    print(f"Dataset downloaded to: {dataset.location}")
 
-# Train the model
-results = model.train(
-    data=f'{dataset.location}/data.yaml',
-    epochs=100,
-    imgsz=640,
-    batch=16,
-    name='football_players_model'
-)
+    # Load a pretrained YOLOv8 model
+    model = YOLO('yolov8n.pt')
 
-# Validate the model
-results = model.val()
+    # Train the model
+    results = model.train(
+        data=dataset.location + '/data.yaml',  # Use the downloaded dataset location
+        epochs=100,
+        imgsz=640,
+        batch=16,
+        name='football_players_model'
+    )
 
-# Export the model
-model.export(format="onnx")
+    # Validate the model
+    results = model.val()
 
-# Print the path of the best model
-print(f"Best model saved at: {model.best}")
+    # Export the model
+    model.export(format="onnx")
+
+    # Print the path of the best model
+    print(f"Best model saved at: {model.best}")
+
+if __name__ == "__main__":
+    train_yolo_model()

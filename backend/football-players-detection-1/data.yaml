@@ -11,5 +11,5 @@ roboflow:
   version: 1
   workspace: roboflow-jvuqo
 test: ../test/images
-train: football-players-detection-1/train/images
-val: football-players-detection-1/valid/images
+train: ../train/images
+val: ../valid/images
