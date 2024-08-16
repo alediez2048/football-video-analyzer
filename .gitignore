@@ -18,3 +18,16 @@ build/
 backend/uploads/*.mp4
 backend/uploads/*.mov
 backend/*.pt
+
+# Virtual Environment
+myenv/
+
+# Large files - videos, models, and datasets
+backend/uploads/*.mp4
+backend/uploads/*.mov
+backend/*.pt
+backend/football-players-detection-1/test/images/
+backend/football-players-detection-1/train/images/
+backend/football-players-detection-1/valid/images/
+
+
