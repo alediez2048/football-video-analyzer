@@ -37,7 +37,7 @@ async def process_video_endpoint(filename: str):
         return {"message": "File not found"}
     
     try:
-        results = await asyncio.wait_for(asyncio.to_thread(process_video, file_path), timeout=300)  # 5 minutes timeout
+        results = await asyncio.wait_for(asyncio.to_thread(process_video, file_path), timeout=900)  # 5 minutes timeout
     except asyncio.TimeoutError:
         logger.error("Video processing timed out")
         return {"message": "Video processing timed out"}
