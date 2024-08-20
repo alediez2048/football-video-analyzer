@@ -3,14 +3,25 @@ import numpy as np
 from ultralytics import YOLO
 import logging
 from sklearn.cluster import KMeans
+import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def process_video(file_path):
     try:
-        model = YOLO('yolov8x.pt')
+        # Get the absolute path to the project root directory
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        
+        # Construct the path to best.pt
+        model_path = os.path.join(project_root, 'best.pt')
+        
+        # Load the custom model
+        model = YOLO(model_path)
+        logger.info(f"Custom model loaded successfully from {model_path}. Class names: {model.names}")
+        
         cap = cv2.VideoCapture(file_path)
+        logger.info(f"Video file opened: {file_path}")
         
         frames_processed = 0
         detections = []
@@ -24,7 +35,8 @@ def process_video(file_path):
             if not ret:
                 break
 
-            results = model(frame)
+            results = model(frame, conf=0.25)
+            logger.info(f"Frame {frames_processed}: {len(results[0].boxes)} detections")
 
             frame_detections = []
             current_objects = {}
@@ -36,8 +48,9 @@ def process_video(file_path):
 
                 for box, cls, conf in zip(boxes, classes, confs):
                     object_type = model.names[int(cls)]
+                    logger.info(f"Detected: {object_type} with confidence {conf}")
                     
-                    if object_type in ['person', 'sports ball']:
+                    if object_type in ['ball', 'goalkeeper', 'player', 'referee']:
                         # Try to match with existing tracked objects
                         matched = False
                         for obj_id, obj in tracked_objects.items():
@@ -62,8 +75,8 @@ def process_video(file_path):
                                 'confidence': float(conf)
                             }
                             
-                            # Extract jersey color
-                            if object_type == 'person':
+                            # Extract jersey color for players and goalkeepers
+                            if object_type in ['player', 'goalkeeper']:
                                 jersey_color = extract_jersey_color(frame, box)
                                 jersey_colors.append(jersey_color)
 
@@ -71,10 +84,10 @@ def process_video(file_path):
             if len(jersey_colors) >= 10 and team_colors is None:
                 team_colors = KMeans(n_clusters=2, random_state=42).fit(jersey_colors)
             
-            # Assign teams to players
+            # Assign teams to players and goalkeepers
             if team_colors is not None:
                 for obj_id, obj in current_objects.items():
-                    if obj['type'] == 'person' and 'team' not in obj:
+                    if obj['type'] in ['player', 'goalkeeper'] and 'team' not in obj:
                         jersey_color = extract_jersey_color(frame, obj['box'])
                         team = team_colors.predict([jersey_color])[0]
                         obj['team'] = int(team)
@@ -108,6 +121,8 @@ def process_video(file_path):
         logger.error(f"Error in process_video: {str(e)}", exc_info=True)
         raise
 
+# The rest of your functions (detect_events, iou, extract_jersey_color) remain unchanged
+
 def detect_events(detections):
     events = []
     last_event_frame = -1
@@ -125,8 +140,8 @@ def detect_events(detections):
         prev_frame = detections[i-1]
         curr_frame = detections[i]
         
-        ball_prev = next((d for d in prev_frame['detections'] if d['type'] == 'sports ball'), None)
-        ball_curr = next((d for d in curr_frame['detections'] if d['type'] == 'sports ball'), None)
+        ball_prev = next((d for d in prev_frame['detections'] if d['type'] == 'ball'), None)
+        ball_curr = next((d for d in curr_frame['detections'] if d['type'] == 'ball'), None)
         
         if ball_prev and ball_curr:
             ball_movement = np.linalg.norm(np.array(ball_curr['box'][:2]) - np.array(ball_prev['box'][:2]))
@@ -139,7 +154,7 @@ def detect_events(detections):
                 logger.info(f"{event_type.capitalize()} detected at frame {curr_frame['frame']} with speed {ball_speed:.2f} m/s")
             
             # Detect change in ball possession
-            closest_player = min((d for d in curr_frame['detections'] if d['type'] == 'person'), 
+            closest_player = min((d for d in curr_frame['detections'] if d['type'] in ['player', 'goalkeeper']), 
                                  key=lambda x: np.linalg.norm(np.array(x['box'][:2]) - np.array(ball_curr['box'][:2])), 
                                  default=None)
             
@@ -152,7 +167,7 @@ def detect_events(detections):
                     ball_possession = current_possession
         
         # Detect player collisions (potential fouls or tackles)
-        players = [d for d in curr_frame['detections'] if d['type'] == 'person']
+        players = [d for d in curr_frame['detections'] if d['type'] in ['player', 'goalkeeper']]
         for i, player1 in enumerate(players):
             for player2 in players[i+1:]:
                 distance = np.linalg.norm(np.array(player1['box'][:2]) - np.array(player2['box'][:2]))
