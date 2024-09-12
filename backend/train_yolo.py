@@ -34,3 +34,4 @@ def train_yolo_model():
 
 if __name__ == "__main__":
     train_yolo_model()
+    print("Model training complete. You can now use the trained model in video_processor.py")

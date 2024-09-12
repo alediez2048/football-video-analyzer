@@ -83,6 +83,12 @@ function App() {
             ) : (
               <p>No events detected</p>
             )}
+            <h3>Commentary:</h3>
+            <ul>
+              {results.commentary.map((comment, index) => (
+                <li key={index}>{comment}</li>
+              ))}
+            </ul>
           </section>
         )}
       </main>
