@@ -22,17 +22,6 @@ def process_video(file_path):
         ball_tracker = None
         ball_history = []
 
-        # Parameters for ball tracking
-        ball_detector = cv2.SimpleBlobDetector_create()
-        params = cv2.SimpleBlobDetector_Params()
-        params.filterByCircularity = True
-        params.minCircularity = 0.7
-        params.filterByConvexity = True
-        params.minConvexity = 0.8
-        params.filterByInertia = True
-        params.minInertiaRatio = 0.5
-        ball_detector = cv2.SimpleBlobDetector_create(params)
-
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
@@ -44,21 +33,20 @@ def process_video(file_path):
             frame_detections = []
             ball_detected = False
 
-            # Ball detection using SimpleBlobDetector
-            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            keypoints = ball_detector.detect(gray_frame)
-            
-            if keypoints:
+            # Ball detection using YOLO
+            ball_curr = next((d for d in results[0].boxes if model.names[int(d.cls)] == 'sports ball'), None)
+            if ball_curr:
                 ball_detected = True
-                ball_tracker = (int(keypoints[0].pt[0]), int(keypoints[0].pt[1]))
+                x1, y1, x2, y2 = ball_curr.xyxy[0].tolist()
+                ball_tracker = ((x1+x2)/2, (y1+y2)/2)
                 ball_history.append(ball_tracker)
                 if len(ball_history) > 10:
                     ball_history.pop(0)
                 frame_detections.append({
                     'type': 'sports ball',
-                    'box': [ball_tracker[0]-5, ball_tracker[1]-5, ball_tracker[0]+5, ball_tracker[1]+5],
+                    'box': [x1, y1, x2, y2],
                     'id': -1,
-                    'confidence': 1.0
+                    'confidence': float(ball_curr.conf)
                 })
 
             for box in results[0].boxes:
@@ -164,13 +152,14 @@ def detect_events(detections):
     ball_possession = None
     possession_team = None
     ball_prev = None
-    last_event_frame = -30  # Cooldown period
+    last_event_frame = -30  # Reduced cooldown period
+    possession_change_cooldown = -15  # Reduced cooldown for possession changes
     
     for i in range(1, len(detections)):
         curr_frame = detections[i]
         frame_number = curr_frame['frame']
 
-        if frame_number - last_event_frame < 30:  # Skip if within cooldown period
+        if frame_number - last_event_frame < 30:  # Reduced skip period
             continue
 
         ball_curr = next((d for d in curr_frame['detections'] if d['type'] == 'sports ball'), None)
@@ -184,17 +173,17 @@ def detect_events(detections):
                 current_possession = closest_player['box'][:2]
                 current_team = closest_player.get('team')
                 
-                if ball_possession is None or np.linalg.norm(np.array(current_possession) - np.array(ball_possession)) > 50:
+                if (ball_possession is None or np.linalg.norm(np.array(current_possession) - np.array(ball_possession)) > 50) and frame_number - possession_change_cooldown >= 15:
                     if ball_possession is not None and current_team != possession_team:
                         events.append({'type': 'possession_change', 'frame': frame_number, 'team': current_team})
-                        last_event_frame = frame_number
+                        possession_change_cooldown = frame_number
                     ball_possession = current_possession
                     possession_team = current_team
 
-                if 5 < ball_speed <= 20:  # Adjusted speed thresholds
+                if 1 < ball_speed <= 8:  # Adjusted speed thresholds for passes
                     events.append({'type': 'pass', 'frame': frame_number, 'speed': ball_speed, 'team': possession_team})
                     last_event_frame = frame_number
-                elif ball_speed > 20:
+                elif ball_speed > 8:  # Adjusted speed threshold for shots
                     events.append({'type': 'shot', 'frame': frame_number, 'speed': ball_speed, 'team': possession_team})
                     last_event_frame = frame_number
 
@@ -204,7 +193,7 @@ def detect_events(detections):
 
 def calculate_speed(pos1, pos2, frames_difference):
     distance = np.linalg.norm(np.array(pos1) - np.array(pos2))
-    return distance / frames_difference  # Remove the * 24 multiplication
+    return distance / frames_difference * 24 / 50  # Assuming 24 fps and 50 pixels = 1 meter
 
 def extract_jersey_color(frame, box):
     x1, y1, x2, y2 = map(int, box)
@@ -254,14 +243,23 @@ def calculate_statistics(events, total_frames):
     team_possession = {0: 0, 1: 0}
     passes = {0: 0, 1: 0}
     shots = {0: 0, 1: 0}
+    last_possession_change = 0
+    current_team = None
 
     for event in events:
         if event['type'] == 'possession_change':
-            team_possession[event['team']] += 1
+            if current_team is not None:
+                team_possession[current_team] += event['frame'] - last_possession_change
+            current_team = event['team']
+            last_possession_change = event['frame']
         elif event['type'] == 'pass':
             passes[event['team']] += 1
         elif event['type'] == 'shot':
             shots[event['team']] += 1
+
+    # Add the final possession duration
+    if current_team is not None:
+        team_possession[current_team] += total_frames - last_possession_change
 
     total_possession = sum(team_possession.values())
     
