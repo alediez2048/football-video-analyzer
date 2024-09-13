@@ -154,20 +154,6 @@ def calculate_speed(pos1, pos2, frames_difference):
     distance = np.linalg.norm(np.array(pos1) - np.array(pos2))
     return distance / frames_difference * 24  # Assuming 24 fps, adjust if different
 
-def iou(box1, box2):
-    # Calculate intersection over union
-    x1 = max(box1[0], box2[0])
-    y1 = max(box1[1], box2[1])
-    x2 = min(box1[2], box2[2])
-    y2 = min(box1[3], box2[3])
-    
-    intersection = max(0, x2 - x1) * max(0, y2 - y1)
-    area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
-    area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
-    
-    iou = intersection / float(area1 + area2 - intersection)
-    return iou
-
 def extract_jersey_color(frame, box):
     x1, y1, x2, y2 = map(int, box)
     player_img = frame[y1:y2, x1:x2]
@@ -188,7 +174,12 @@ def extract_jersey_color(frame, box):
 def draw_on_frame(frame, detections):
     for obj in detections:
         x1, y1, x2, y2 = map(int, obj['box'])
-        color = (0, 255, 0) if obj['type'] == 'person' else (0, 0, 255)
+        if obj['type'] == 'person':
+            color = (0, 255, 0) if obj.get('team') == 0 else (0, 0, 255)
+        elif obj['type'] == 'sports ball':
+            color = (0, 165, 255)  # Orange color for the ball
+        else:
+            color = (255, 255, 255)  # White for other objects
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
         cv2.putText(frame, f"{obj['type']} {obj.get('team', '')}", (x1, y1 - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)

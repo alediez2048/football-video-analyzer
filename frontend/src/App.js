@@ -75,7 +75,7 @@ function App() {
           <p className="status">{uploadStatus}</p>
           <p className="status">{processingStatus}</p>
         </section>
-        {processedVideoUrl && results && (
+        {results && (
           <section className="results">
             <h2>Processed Video:</h2>
             <ProcessedVideo videoUrl={processedVideoUrl} detections={results.detections} />
