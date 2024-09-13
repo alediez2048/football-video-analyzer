@@ -11,6 +11,7 @@ function App() {
   const [results, setResults] = useState(null);
   const [processedVideoUrl, setProcessedVideoUrl] = useState(null);
   const [videoDuration, setVideoDuration] = useState(null);
+  const [progress, setProgress] = useState(0);
 
   const handleFileChange = (event) => {
     setFile(event.target.files[0]);
@@ -45,8 +46,16 @@ function App() {
   const processVideo = async (filename) => {
     try {
       setProcessingStatus('Processing video...');
+      setProgress(0);
+      
+      const estimatedDuration = videoDuration * 0.5; // Assume processing takes half the video duration
+      const stopSimulation = simulateProgress(estimatedDuration);
+
       const response = await axios.get(`http://localhost:8000/process_video/${filename}`);
-      console.log('Response from backend:', response.data);  // Keep this line for debugging
+      stopSimulation();
+      setProgress(100);
+
+      console.log('Response from backend:', response.data);
       if (response.data.error) {
         setProcessingStatus(`Processing error: ${response.data.error}`);
       } else {
@@ -56,10 +65,29 @@ function App() {
       setResults(response.data);
       setProcessedVideoUrl(`http://localhost:8000/processed_video/${filename}`);
     } catch (error) {
-      console.error('Error processing video:', error);  // Keep this line for debugging
+      console.error('Error processing video:', error);
       setProcessingStatus(`Processing failed: ${error.message}`);
       setResults(null);
+      setProgress(0);
     }
+  };
+
+  const simulateProgress = (duration) => {
+    const intervalTime = 100; // Update every 100ms
+    const totalSteps = duration * 1000 / intervalTime;
+    let currentStep = 0;
+
+    const interval = setInterval(() => {
+      currentStep++;
+      const newProgress = Math.min((currentStep / totalSteps) * 100, 99);
+      setProgress(newProgress);
+
+      if (currentStep >= totalSteps) {
+        clearInterval(interval);
+      }
+    }, intervalTime);
+
+    return () => clearInterval(interval);
   };
 
   return (
@@ -83,6 +111,11 @@ function App() {
           </button>
           <p className="status">{uploadStatus}</p>
           <p className="status">{processingStatus}</p>
+          {progress > 0 && progress < 100 && (
+            <div className="progress-bar">
+              <div className="progress" style={{width: `${progress}%`}}></div>
+            </div>
+          )}
         </section>
         {results && (
           <section className="results">
