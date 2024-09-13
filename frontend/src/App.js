@@ -38,16 +38,17 @@ function App() {
     try {
       setProcessingStatus('Processing video...');
       const response = await axios.get(`http://localhost:8000/process_video/${filename}`);
-      console.log('Response from backend:', response.data);  // Add this line
+      console.log('Response from backend:', response.data);  // Keep this line for debugging
       if (response.data.error) {
         setProcessingStatus(`Processing error: ${response.data.error}`);
       } else {
-        setProcessingStatus(`Processing complete: ${response.data.total_frames} frames processed`);
+        const totalFrames = response.data.total_frames || 'unknown';
+        setProcessingStatus(`Processing complete: ${totalFrames} frames processed`);
       }
       setResults(response.data);
       setProcessedVideoUrl(`http://localhost:8000/processed_video/${filename}`);
     } catch (error) {
-      console.error('Error processing video:', error);  // Add this line
+      console.error('Error processing video:', error);  // Keep this line for debugging
       setProcessingStatus(`Processing failed: ${error.message}`);
       setResults(null);
     }
