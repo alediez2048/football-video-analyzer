@@ -10,9 +10,17 @@ function App() {
   const [processingStatus, setProcessingStatus] = useState('');
   const [results, setResults] = useState(null);
   const [processedVideoUrl, setProcessedVideoUrl] = useState(null);
+  const [videoDuration, setVideoDuration] = useState(null);
 
   const handleFileChange = (event) => {
     setFile(event.target.files[0]);
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    video.onloadedmetadata = function() {
+      window.URL.revokeObjectURL(video.src);
+      setVideoDuration(video.duration);
+    }
+    video.src = URL.createObjectURL(event.target.files[0]);
   };
 
   const handleUpload = async () => {
@@ -79,6 +87,7 @@ function App() {
         {results && (
           <section className="results">
             <h2>Processed Video:</h2>
+            {videoDuration && <p>Video Duration: {videoDuration.toFixed(2)} seconds</p>}
             <ProcessedVideo videoUrl={processedVideoUrl} detections={results.detections} />
             <h3>Events:</h3>
             {results.events && results.events.length > 0 ? (

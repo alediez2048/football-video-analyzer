@@ -148,3 +148,4 @@ websockets==12.0
 wsproto==1.2.0
 yarl==1.8.2
 scikit-learn
+filterpy==1.4.5

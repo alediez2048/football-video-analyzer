@@ -17,65 +17,60 @@ def process_video(file_path):
         
         frames_processed = 0
         detections = []
+        tracked_objects = {}
+        next_id = 1
         jersey_colors = []
         team_colors = None
-        ball_tracker = None
-        ball_history = []
 
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
 
-            results = model.track(frame, persist=True, conf=0.3)  # Lower confidence threshold
+            results = model(frame)
             logger.info(f"Frame {frames_processed}: {len(results[0].boxes)} detections")
 
             frame_detections = []
-            ball_detected = False
+            current_objects = {}
 
-            # Ball detection using YOLO
-            ball_curr = next((d for d in results[0].boxes if model.names[int(d.cls)] == 'sports ball'), None)
-            if ball_curr:
-                ball_detected = True
-                x1, y1, x2, y2 = ball_curr.xyxy[0].tolist()
-                ball_tracker = ((x1+x2)/2, (y1+y2)/2)
-                ball_history.append(ball_tracker)
-                if len(ball_history) > 10:
-                    ball_history.pop(0)
-                frame_detections.append({
-                    'type': 'sports ball',
-                    'box': [x1, y1, x2, y2],
-                    'id': -1,
-                    'confidence': float(ball_curr.conf)
-                })
+            for r in results:
+                boxes = r.boxes.xyxy.cpu().numpy()
+                classes = r.boxes.cls.cpu().numpy()
+                confs = r.boxes.conf.cpu().numpy()
 
-            for box in results[0].boxes:
-                x1, y1, x2, y2 = box.xyxy[0].tolist()
-                obj_type = model.names[int(box.cls)]
-                track_id = int(box.id) if box.id is not None else -1
-                confidence = float(box.conf)
-                
-                if obj_type == 'person':
-                    frame_detections.append({
-                        'type': obj_type,
-                        'box': [x1, y1, x2, y2],
-                        'id': track_id,
-                        'confidence': confidence
-                    })
-                    jersey_color = extract_jersey_color(frame, [x1, y1, x2, y2])
-                    jersey_colors.append(jersey_color)
-
-            if not ball_detected and ball_history:
-                # Use the average of the last few positions
-                avg_x = sum(pos[0] for pos in ball_history) / len(ball_history)
-                avg_y = sum(pos[1] for pos in ball_history) / len(ball_history)
-                ball_tracker = (int(avg_x), int(avg_y))
-                frame_detections.append({
-                    'type': 'sports ball',
-                    'box': [avg_x-5, avg_y-5, avg_x+5, avg_y+5],
-                    'id': -1,
-                    'confidence': 0.5
-                })
+                for box, cls, conf in zip(boxes, classes, confs):
+                    object_type = model.names[int(cls)]
+                    logger.info(f"Detected: {object_type} with confidence {conf}")
+                    
+                    if object_type in ['person', 'sports ball']:
+                        # Try to match with existing tracked objects
+                        matched = False
+                        for obj_id, obj in tracked_objects.items():
+                            if obj['type'] == object_type and iou(box, obj['box']) > 0.3:
+                                current_objects[obj_id] = {
+                                    'type': object_type,
+                                    'box': box.tolist(),
+                                    'confidence': float(conf)
+                                }
+                                if 'team' in obj:
+                                    current_objects[obj_id]['team'] = obj['team']
+                                matched = True
+                                break
+                        
+                        # If no match, create a new tracked object
+                        if not matched:
+                            new_id = next_id
+                            next_id += 1
+                            current_objects[new_id] = {
+                                'type': object_type,
+                                'box': box.tolist(),
+                                'confidence': float(conf)
+                            }
+                            
+                            # Extract jersey color
+                            if object_type == 'person':
+                                jersey_color = extract_jersey_color(frame, box)
+                                jersey_colors.append(jersey_color)
 
             # Perform team assignment if we have enough jersey colors
             if len(jersey_colors) >= 10 and team_colors is None:
@@ -83,11 +78,14 @@ def process_video(file_path):
             
             # Assign teams to players
             if team_colors is not None:
-                for obj in frame_detections:
-                    if obj['type'] == 'person':
+                for obj_id, obj in current_objects.items():
+                    if obj['type'] == 'person' and 'team' not in obj:
                         jersey_color = extract_jersey_color(frame, obj['box'])
                         team = team_colors.predict([jersey_color])[0]
                         obj['team'] = int(team)
+
+            tracked_objects = current_objects
+            frame_detections = list(current_objects.values())
 
             detections.append({
                 'frame': frames_processed,
@@ -105,61 +103,32 @@ def process_video(file_path):
 
         events = detect_events(detections)
         commentary = generate_commentary(events)
-
-        # Draw on frame
-        cap = cv2.VideoCapture(file_path)
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = int(cap.get(cv2.CAP_PROP_FPS))
-        output = cv2.VideoWriter('output.mp4', cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
-        
-        for frame_data in detections:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            annotated_frame = draw_on_frame(frame, frame_data['detections'])
-            output.write(annotated_frame)
-        
-        cap.release()
-        output.release()
-
-        # Add these lines before calling calculate_statistics
-        logger.info(f"Number of events detected: {len(events)}")
-        logger.info(f"Events: {events}")
-
         statistics = calculate_statistics(events, frames_processed)
+
         return {
             'total_frames': frames_processed,
             'detections': detections,
             'events': events,
             'commentary': commentary,
-            'field_dimensions': {'width': 105, 'height': 68},  # in meters
-            'statistics': statistics
+            'statistics': statistics,
+            'field_dimensions': {'width': 105, 'height': 68}  # in meters
         }
     except Exception as e:
         logger.error(f"Error in process_video: {str(e)}", exc_info=True)
-        return {
-            'error': str(e),
-            'total_frames': frames_processed if 'frames_processed' in locals() else 0,
-            'detections': detections if 'detections' in locals() else [],
-            'events': [],
-            'commentary': [],
-            'statistics': {}
-        }
+        raise
 
 def detect_events(detections):
     events = []
     ball_possession = None
     possession_team = None
     ball_prev = None
-    last_event_frame = -30  # Reduced cooldown period
-    possession_change_cooldown = -15  # Reduced cooldown for possession changes
+    last_event_frame = -5  # Reduced cooldown period for short clips
     
     for i in range(1, len(detections)):
         curr_frame = detections[i]
         frame_number = curr_frame['frame']
 
-        if frame_number - last_event_frame < 30:  # Reduced skip period
+        if frame_number - last_event_frame < 5:  # Reduced skip period
             continue
 
         ball_curr = next((d for d in curr_frame['detections'] if d['type'] == 'sports ball'), None)
@@ -173,60 +142,23 @@ def detect_events(detections):
                 current_possession = closest_player['box'][:2]
                 current_team = closest_player.get('team')
                 
-                if (ball_possession is None or np.linalg.norm(np.array(current_possession) - np.array(ball_possession)) > 50) and frame_number - possession_change_cooldown >= 15:
+                if ball_possession is None or np.linalg.norm(np.array(current_possession) - np.array(ball_possession)) > 20:
                     if ball_possession is not None and current_team != possession_team:
                         events.append({'type': 'possession_change', 'frame': frame_number, 'team': current_team})
-                        possession_change_cooldown = frame_number
+                        last_event_frame = frame_number
                     ball_possession = current_possession
                     possession_team = current_team
 
-                if 1 < ball_speed <= 8:  # Adjusted speed thresholds for passes
+                if 0.5 < ball_speed <= 5:  # Adjusted speed thresholds for passes
                     events.append({'type': 'pass', 'frame': frame_number, 'speed': ball_speed, 'team': possession_team})
                     last_event_frame = frame_number
-                elif ball_speed > 8:  # Adjusted speed threshold for shots
-                    events.append({'type': 'shot', 'frame': frame_number, 'speed': ball_speed, 'team': possession_team})
+                elif ball_speed > 5:  # Adjusted speed threshold for shots
+                    events.append({'type': 'shot', 'frame': frame_number, 'speed': min(ball_speed, 30)})  # Cap shot speed at 30 m/s
                     last_event_frame = frame_number
 
         ball_prev = ball_curr
 
     return events
-
-def calculate_speed(pos1, pos2, frames_difference):
-    distance = np.linalg.norm(np.array(pos1) - np.array(pos2))
-    return distance / frames_difference * 24 / 50  # Assuming 24 fps and 50 pixels = 1 meter
-
-def extract_jersey_color(frame, box):
-    x1, y1, x2, y2 = map(int, box)
-    player_img = frame[y1:y2, x1:x2]
-    player_img = cv2.resize(player_img, (50, 50))  # Resize for consistency
-    player_img = player_img.reshape((-1, 3))
-    player_img = np.float32(player_img)
-    
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-    K = 2
-    _, label, center = cv2.kmeans(player_img, K, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
-    
-    center = np.uint8(center)
-    res = center[label.flatten()]
-    dominant_color = res.reshape((50, 50, 3))
-    
-    return dominant_color[0][0]  # Return the most dominant color
-
-def draw_on_frame(frame, detections):
-    for obj in detections:
-        x1, y1, x2, y2 = map(int, obj['box'])
-        if obj['type'] == 'person':
-            color = (0, 255, 0) if obj.get('team') == 0 else (0, 0, 255)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(frame, f"Player {obj.get('team', '')}", (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-        elif obj['type'] == 'sports ball':
-            color = (0, 165, 255)  # Orange color for the ball
-            center = ((x1+x2)//2, (y1+y2)//2)
-            cv2.circle(frame, center, 10, color, -1)  # Draw a filled circle for the ball
-            cv2.putText(frame, "Ball", (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-    return frame
 
 def generate_commentary(events):
     commentary = []
@@ -244,12 +176,11 @@ def calculate_statistics(events, total_frames):
     passes = {0: 0, 1: 0}
     shots = {0: 0, 1: 0}
     last_possession_change = 0
-    current_team = None
+    current_team = 0  # Start with team 0 having possession
 
     for event in events:
         if event['type'] == 'possession_change':
-            if current_team is not None:
-                team_possession[current_team] += event['frame'] - last_possession_change
+            team_possession[current_team] += event['frame'] - last_possession_change
             current_team = event['team']
             last_possession_change = event['frame']
         elif event['type'] == 'pass':
@@ -258,8 +189,7 @@ def calculate_statistics(events, total_frames):
             shots[event['team']] += 1
 
     # Add the final possession duration
-    if current_team is not None:
-        team_possession[current_team] += total_frames - last_possession_change
+    team_possession[current_team] += total_frames - last_possession_change
 
     total_possession = sum(team_possession.values())
     
@@ -274,3 +204,38 @@ def calculate_statistics(events, total_frames):
         'passes': passes,
         'shots': shots
     }
+
+def calculate_speed(pos1, pos2, frames_difference):
+    distance = np.linalg.norm(np.array(pos1) - np.array(pos2))
+    return distance / frames_difference * 24 / 200  # Assuming 24 fps and 200 pixels = 1 meter
+
+def iou(box1, box2):
+    # Calculate intersection over union
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
+    x2 = min(box1[2], box2[2])
+    y2 = min(box1[3], box2[3])
+    
+    intersection = max(0, x2 - x1) * max(0, y2 - y1)
+    area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+    
+    iou = intersection / float(area1 + area2 - intersection)
+    return iou
+
+def extract_jersey_color(frame, box):
+    x1, y1, x2, y2 = map(int, box)
+    player_img = frame[y1:y2, x1:x2]
+    player_img = cv2.resize(player_img, (50, 50))  # Resize for consistency
+    player_img = player_img.reshape((-1, 3))
+    player_img = np.float32(player_img)
+    
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+    K = 2
+    _, label, center = cv2.kmeans(player_img, K, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+    
+    center = np.uint8(center)
+    res = center[label.flatten()]
+    dominant_color = res.reshape((50, 50, 3))
+    
+    return dominant_color[0][0]  # Return the most dominant color
