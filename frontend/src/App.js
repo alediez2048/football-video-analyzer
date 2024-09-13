@@ -38,10 +38,16 @@ function App() {
     try {
       setProcessingStatus('Processing video...');
       const response = await axios.get(`http://localhost:8000/process_video/${filename}`);
-      setProcessingStatus(`Processing complete: ${response.data.message}`);
-      setResults(response.data.results);
+      console.log('Response from backend:', response.data);  // Add this line
+      if (response.data.error) {
+        setProcessingStatus(`Processing error: ${response.data.error}`);
+      } else {
+        setProcessingStatus(`Processing complete: ${response.data.total_frames} frames processed`);
+      }
+      setResults(response.data);
       setProcessedVideoUrl(`http://localhost:8000/processed_video/${filename}`);
     } catch (error) {
+      console.error('Error processing video:', error);  // Add this line
       setProcessingStatus(`Processing failed: ${error.message}`);
       setResults(null);
     }
@@ -83,12 +89,30 @@ function App() {
             ) : (
               <p>No events detected</p>
             )}
-            <h3>Commentary:</h3>
-            <ul>
-              {results.commentary.map((comment, index) => (
-                <li key={index}>{comment}</li>
-              ))}
-            </ul>
+            {results.commentary && results.commentary.length > 0 && (
+              <>
+                <h3>Commentary:</h3>
+                <ul>
+                  {results.commentary.map((comment, index) => (
+                    <li key={index}>{comment}</li>
+                  ))}
+                </ul>
+              </>
+            )}
+            {results.statistics && (
+              <section className="statistics">
+                <h3>Statistics:</h3>
+                {results.statistics.possession && (
+                  <p>Possession: Team 0 - {results.statistics.possession[0].toFixed(2)}%, Team 1 - {results.statistics.possession[1].toFixed(2)}%</p>
+                )}
+                {results.statistics.passes && (
+                  <p>Passes: Team 0 - {results.statistics.passes[0]}, Team 1 - {results.statistics.passes[1]}</p>
+                )}
+                {results.statistics.shots && (
+                  <p>Shots: Team 0 - {results.statistics.shots[0]}, Team 1 - {results.statistics.shots[1]}</p>
+                )}
+              </section>
+            )}
           </section>
         )}
       </main>

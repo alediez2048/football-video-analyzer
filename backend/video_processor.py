@@ -3,7 +3,6 @@ import numpy as np
 from ultralytics import YOLO
 import logging
 from sklearn.cluster import KMeans
-from ultralytics.trackers import BOTSORT
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -11,7 +10,6 @@ logger = logging.getLogger(__name__)
 def process_video(file_path):
     try:
         model = YOLO('yolov8x.pt')
-        tracker = BOTSORT()
         logger.info(f"Model loaded successfully. Class names: {model.names}")
         
         cap = cv2.VideoCapture(file_path)
@@ -19,8 +17,6 @@ def process_video(file_path):
         
         frames_processed = 0
         detections = []
-        tracked_objects = {}
-        next_id = 1
         jersey_colors = []
         team_colors = None
 
@@ -29,50 +25,24 @@ def process_video(file_path):
             if not ret:
                 break
 
-            results = model.track(frame, tracker=tracker, persist=True)
+            results = model.track(frame, persist=True)  # Use the track method instead of predict
             logger.info(f"Frame {frames_processed}: {len(results[0].boxes)} detections")
 
             frame_detections = []
-            current_objects = {}
+            for box in results[0].boxes:
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                obj_type = model.names[int(box.cls)]
+                track_id = int(box.id) if box.id is not None else -1
+                frame_detections.append({
+                    'type': obj_type,
+                    'box': [x1, y1, x2, y2],
+                    'id': track_id,
+                    'confidence': float(box.conf)
+                })
 
-            for r in results:
-                boxes = r.boxes.xyxy.cpu().numpy()
-                classes = r.boxes.cls.cpu().numpy()
-                confs = r.boxes.conf.cpu().numpy()
-
-                for box, cls, conf in zip(boxes, classes, confs):
-                    object_type = model.names[int(cls)]
-                    logger.info(f"Detected: {object_type} with confidence {conf}")
-                    
-                    if object_type in ['person', 'sports ball']:
-                        # Try to match with existing tracked objects
-                        matched = False
-                        for obj_id, obj in tracked_objects.items():
-                            if obj['type'] == object_type and iou(box, obj['box']) > 0.3:
-                                current_objects[obj_id] = {
-                                    'type': object_type,
-                                    'box': box.tolist(),
-                                    'confidence': float(conf)
-                                }
-                                if 'team' in obj:
-                                    current_objects[obj_id]['team'] = obj['team']
-                                matched = True
-                                break
-                        
-                        # If no match, create a new tracked object
-                        if not matched:
-                            new_id = next_id
-                            next_id += 1
-                            current_objects[new_id] = {
-                                'type': object_type,
-                                'box': box.tolist(),
-                                'confidence': float(conf)
-                            }
-                            
-                            # Extract jersey color
-                            if object_type == 'person':
-                                jersey_color = extract_jersey_color(frame, box)
-                                jersey_colors.append(jersey_color)
+                if obj_type == 'person':
+                    jersey_color = extract_jersey_color(frame, [x1, y1, x2, y2])
+                    jersey_colors.append(jersey_color)
 
             # Perform team assignment if we have enough jersey colors
             if len(jersey_colors) >= 10 and team_colors is None:
@@ -80,14 +50,11 @@ def process_video(file_path):
             
             # Assign teams to players
             if team_colors is not None:
-                for obj_id, obj in current_objects.items():
-                    if obj['type'] == 'person' and 'team' not in obj:
+                for obj in frame_detections:
+                    if obj['type'] == 'person':
                         jersey_color = extract_jersey_color(frame, obj['box'])
                         team = team_colors.predict([jersey_color])[0]
                         obj['team'] = int(team)
-
-            tracked_objects = current_objects
-            frame_detections = list(current_objects.values())
 
             detections.append({
                 'frame': frames_processed,
@@ -106,21 +73,48 @@ def process_video(file_path):
         events = detect_events(detections)
         commentary = generate_commentary(events)
 
+        # Draw on frame
+        cap = cv2.VideoCapture(file_path)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = int(cap.get(cv2.CAP_PROP_FPS))
+        output = cv2.VideoWriter('output.mp4', cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
+        
+        for frame_data in detections:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            annotated_frame = draw_on_frame(frame, frame_data['detections'])
+            output.write(annotated_frame)
+        
+        cap.release()
+        output.release()
+
+        statistics = calculate_statistics(events, frames_processed)
         return {
             'total_frames': frames_processed,
             'detections': detections,
             'events': events,
             'commentary': commentary,
-            'field_dimensions': {'width': 105, 'height': 68}  # in meters
+            'field_dimensions': {'width': 105, 'height': 68},  # in meters
+            'statistics': statistics
         }
     except Exception as e:
         logger.error(f"Error in process_video: {str(e)}", exc_info=True)
-        raise
+        return {
+            'error': str(e),
+            'total_frames': frames_processed if 'frames_processed' in locals() else 0,
+            'detections': detections if 'detections' in locals() else [],
+            'events': [],
+            'commentary': [],
+            'statistics': {}
+        }
 
 def detect_events(detections):
     events = []
     ball_possession = None
     possession_team = None
+    ball_prev = None
     
     for i in range(1, len(detections)):
         prev_frame = detections[i-1]
@@ -142,19 +136,17 @@ def detect_events(detections):
                     ball_possession = current_possession
                     possession_team = current_team
 
-        # Detect passes
-        if ball_curr and 'ball_prev' in locals():
-            ball_speed = calculate_speed(ball_curr['box'][:2], ball_prev['box'][:2], 1)
-            if ball_speed > 5 and ball_speed <= 15:
-                events.append({'type': 'pass', 'frame': curr_frame['frame'], 'speed': ball_speed})
+            # Detect passes and shots only if we have both current and previous ball positions
+            if ball_prev is not None:
+                ball_speed = calculate_speed(ball_curr['box'][:2], ball_prev['box'][:2], 1)
+                if 5 < ball_speed <= 15:
+                    events.append({'type': 'pass', 'frame': curr_frame['frame'], 'speed': ball_speed})
+                elif ball_speed > 15:
+                    events.append({'type': 'shot', 'frame': curr_frame['frame'], 'speed': ball_speed})
 
-        # Detect shots
-        if ball_curr and 'ball_prev' in locals():
-            ball_speed = calculate_speed(ball_curr['box'][:2], ball_prev['box'][:2], 1)
-            if ball_speed > 15:
-                events.append({'type': 'shot', 'frame': curr_frame['frame'], 'speed': ball_speed})
-
-        ball_prev = ball_curr
+            ball_prev = ball_curr
+        else:
+            ball_prev = None  # Reset ball_prev if no ball is detected in the current frame
 
     return events
 
@@ -193,6 +185,15 @@ def extract_jersey_color(frame, box):
     
     return dominant_color[0][0]  # Return the most dominant color
 
+def draw_on_frame(frame, detections):
+    for obj in detections:
+        x1, y1, x2, y2 = map(int, obj['box'])
+        color = (0, 255, 0) if obj['type'] == 'person' else (0, 0, 255)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        cv2.putText(frame, f"{obj['type']} {obj.get('team', '')}", (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+    return frame
+
 def generate_commentary(events):
     commentary = []
     for event in events:
@@ -203,3 +204,27 @@ def generate_commentary(events):
         elif event['type'] == 'shot':
             commentary.append(f"A powerful shot is taken at frame {event['frame']} with a speed of {event['speed']:.2f} m/s!")
     return commentary
+
+def calculate_statistics(events, total_frames):
+    team_possession = {0: 0, 1: 0}
+    passes = {0: 0, 1: 0}
+    shots = {0: 0, 1: 0}
+
+    current_team = None
+    for event in events:
+        if event['type'] == 'possession_change':
+            current_team = event['team']
+        elif event['type'] == 'pass' and current_team is not None:
+            passes[current_team] += 1
+        elif event['type'] == 'shot' and current_team is not None:
+            shots[current_team] += 1
+        
+        if current_team is not None:
+            team_possession[current_team] += 1
+
+    total_possession = sum(team_possession.values())
+    return {
+        'possession': {team: count / total_possession * 100 for team, count in team_possession.items()},
+        'passes': passes,
+        'shots': shots
+    }
