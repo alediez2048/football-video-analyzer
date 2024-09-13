@@ -17,6 +17,9 @@ if not os.path.exists("uploads"):
     os.makedirs("uploads")
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
+# Store active WebSocket connections
+active_connections = {}
+
 @app.get("/")
 async def root():
     return {"message": "Welcome to the Football Video Analyzer API"}
@@ -37,8 +40,14 @@ async def process_video_endpoint(filename: str):
         return {"error": "File not found"}
     
     try:
-        results = await asyncio.wait_for(asyncio.to_thread(process_video, file_path, app.state.websocket), timeout=900)  # 5 minutes timeout
-        return results
+        results = await asyncio.wait_for(asyncio.to_thread(process_video, file_path), timeout=900)  # 15 minutes timeout
+        return {
+            "total_frames": results['total_frames'],
+            "events": results['events'],
+            "commentary": results['commentary'],
+            "statistics": results['statistics'],
+            "detections": results['detections']  # You might want to limit this if it's too large
+        }
     except asyncio.TimeoutError:
         logger.error("Video processing timed out")
         return {"error": "Video processing timed out"}
@@ -51,14 +60,19 @@ async def get_processed_video(filename: str):
     video_path = f"uploads/{filename}"
     return FileResponse(video_path)
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+@app.websocket("/ws/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, client_id: str):
     await websocket.accept()
-    while True:
-        data = await websocket.receive_text()
-        if data == "close":
-            await websocket.close()
-            break
+    active_connections[client_id] = websocket
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "close":
+                break
+    except Exception as e:
+        logger.error(f"WebSocket error: {str(e)}")
+    finally:
+        del active_connections[client_id]
 
 app.add_middleware(
     CORSMiddleware,
@@ -67,3 +81,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Function to send progress updates
+async def send_progress_update(client_id: str, progress: int):
+    if client_id in active_connections:
+        await active_connections[client_id].send_json({"progress": progress})
+
+# Make send_progress_update available to other modules
+app.send_progress_update = send_progress_update
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

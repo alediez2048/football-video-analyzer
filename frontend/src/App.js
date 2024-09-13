@@ -1,6 +1,7 @@
 // frontend/src/App.js
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import { v4 as uuidv4 } from 'uuid';  // You may need to install this package
 import ProcessedVideo from './ProcessedVideo';
 import './App.css';
 
@@ -12,10 +13,11 @@ function App() {
   const [processedVideoUrl, setProcessedVideoUrl] = useState(null);
   const [videoDuration, setVideoDuration] = useState(null);
   const [progress, setProgress] = useState(0);
+  const [clientId, setClientId] = useState(uuidv4());
   const ws = useRef(null);
 
   useEffect(() => {
-    ws.current = new WebSocket('ws://localhost:8000/ws');
+    ws.current = new WebSocket(`ws://localhost:8000/ws/${clientId}`);
     ws.current.onmessage = (event) => {
       const progress = JSON.parse(event.data).progress;
       setProgress(progress);
@@ -26,7 +28,7 @@ function App() {
         ws.current.close();
       }
     };
-  }, []);
+  }, [clientId]);
 
   const handleFileChange = (event) => {
     setFile(event.target.files[0]);
@@ -50,11 +52,19 @@ function App() {
 
     try {
       setUploadStatus('Uploading...');
-      const response = await axios.post('http://localhost:8000/upload_video/', formData);
+      const response = await axios.post('http://localhost:8000/upload_video/', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data'
+        }
+      });
       setUploadStatus(`Upload successful: ${response.data.filename}`);
       processVideo(response.data.filename);
     } catch (error) {
+      console.error('Upload error:', error);
       setUploadStatus(`Upload failed: ${error.message}`);
+      if (error.response) {
+        console.error('Error response:', error.response.data);
+      }
     }
   };
 

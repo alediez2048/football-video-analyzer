@@ -7,7 +7,7 @@ from sklearn.cluster import KMeans
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-async def process_video(file_path, websocket):
+def process_video(file_path):
     try:
         model = YOLO('yolov8x.pt')
         logger.info(f"Model loaded successfully. Class names: {model.names}")
@@ -15,8 +15,12 @@ async def process_video(file_path, websocket):
         cap = cv2.VideoCapture(file_path)
         logger.info(f"Video file opened: {file_path}")
         
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        processed_frames = 0
+        frames_processed = 0
+        detections = []
+        tracked_objects = {}
+        next_id = 1
+        jersey_colors = []
+        team_colors = None
 
         while cap.isOpened():
             ret, frame = cap.read()
@@ -24,7 +28,7 @@ async def process_video(file_path, websocket):
                 break
 
             results = model(frame)
-            logger.info(f"Frame {processed_frames}: {len(results[0].boxes)} detections")
+            logger.info(f"Frame {frames_processed}: {len(results[0].boxes)} detections")
 
             frame_detections = []
             current_objects = {}
@@ -41,7 +45,7 @@ async def process_video(file_path, websocket):
                     if object_type in ['person', 'sports ball']:
                         # Try to match with existing tracked objects
                         matched = False
-                        for obj_id, obj in current_objects.items():
+                        for obj_id, obj in tracked_objects.items():
                             if obj['type'] == object_type and iou(box, obj['box']) > 0.3:
                                 current_objects[obj_id] = {
                                     'type': object_type,
@@ -84,27 +88,25 @@ async def process_video(file_path, websocket):
             frame_detections = list(current_objects.values())
 
             detections.append({
-                'frame': processed_frames,
+                'frame': frames_processed,
                 'detections': frame_detections
             })
 
-            processed_frames += 1
-            progress = int((processed_frames / total_frames) * 100)
-            await websocket.send_json({"progress": progress})
-            if processed_frames % 100 == 0:
-                logger.info(f"Processed {processed_frames} frames")
+            frames_processed += 1
+            if frames_processed % 100 == 0:
+                logger.info(f"Processed {frames_processed} frames")
 
         cap.release()
 
-        logger.info(f"Total frames processed: {processed_frames}")
+        logger.info(f"Total frames processed: {frames_processed}")
         logger.info(f"Total detections: {sum(len(frame['detections']) for frame in detections)}")
 
         events = detect_events(detections)
         commentary = generate_commentary(events)
-        statistics = calculate_statistics(events, processed_frames)
+        statistics = calculate_statistics(events, frames_processed)
 
         return {
-            'total_frames': processed_frames,
+            'total_frames': frames_processed,
             'detections': detections,
             'events': events,
             'commentary': commentary,
@@ -117,46 +119,67 @@ async def process_video(file_path, websocket):
 
 def detect_events(detections):
     events = []
+    last_event_frame = -1
+    cooldown_frames = 5
     ball_possession = None
-    possession_team = 0  # Start with team 0 having possession
-    ball_prev = None
-    last_event_frame = -5  # Reduced cooldown period for short clips
+    possession_team = None
+    
+    field_width = 105
+    field_height = 68
+    
+    def calculate_speed(pos1, pos2, frames_difference):
+        distance = np.linalg.norm(np.array(pos1) - np.array(pos2))
+        return distance / frames_difference * 24  # Assuming 24 fps
     
     for i in range(1, len(detections)):
+        prev_frame = detections[i-1]
         curr_frame = detections[i]
-        frame_number = curr_frame['frame']
-
-        if frame_number - last_event_frame < 5:  # Reduced skip period
-            continue
-
+        
+        ball_prev = next((d for d in prev_frame['detections'] if d['type'] == 'sports ball'), None)
         ball_curr = next((d for d in curr_frame['detections'] if d['type'] == 'sports ball'), None)
-        players = [d for d in curr_frame['detections'] if d['type'] == 'person']
-
-        if ball_curr and ball_prev:
+        
+        if ball_prev and ball_curr:
             ball_speed = calculate_speed(ball_curr['box'][:2], ball_prev['box'][:2], 1)
-            closest_player = min(players, key=lambda x: np.linalg.norm(np.array(x['box'][:2]) - np.array(ball_curr['box'][:2])), default=None)
+            
+            if ball_speed > 5:
+                event_type = 'shot' if ball_speed > 15 else 'pass'
+                events.append({'type': event_type, 'frame': curr_frame['frame'], 'speed': ball_speed, 'team': possession_team})
+            
+            closest_player = min((d for d in curr_frame['detections'] if d['type'] == 'person'), 
+                                 key=lambda x: np.linalg.norm(np.array(x['box'][:2]) - np.array(ball_curr['box'][:2])), 
+                                 default=None)
             
             if closest_player:
                 current_possession = closest_player['box'][:2]
-                current_team = closest_player.get('team', possession_team)
-                
-                if ball_possession is None or np.linalg.norm(np.array(current_possession) - np.array(ball_possession)) > 20:
+                current_team = closest_player.get('team')
+                if ball_possession is None or np.linalg.norm(np.array(current_possession) - np.array(ball_possession)) > 1:
                     if ball_possession is not None and current_team != possession_team:
-                        events.append({'type': 'possession_change', 'frame': frame_number, 'team': current_team})
-                        last_event_frame = frame_number
+                        events.append({'type': 'possession_change', 'frame': curr_frame['frame'], 'team': current_team})
                     ball_possession = current_possession
                     possession_team = current_team
-
-                if 0.5 < ball_speed <= 5:  # Adjusted speed thresholds for passes
-                    events.append({'type': 'pass', 'frame': frame_number, 'speed': ball_speed, 'team': possession_team})
-                    last_event_frame = frame_number
-                elif ball_speed > 5:  # Adjusted speed threshold for shots
-                    events.append({'type': 'shot', 'frame': frame_number, 'speed': min(ball_speed, 30), 'team': possession_team})  # Cap shot speed at 30 m/s
-                    last_event_frame = frame_number
-
-        ball_prev = ball_curr
-
-    return events
+        
+        players = [d for d in curr_frame['detections'] if d['type'] == 'person']
+        for i, player1 in enumerate(players):
+            for player2 in players[i+1:]:
+                distance = np.linalg.norm(np.array(player1['box'][:2]) - np.array(player2['box'][:2]))
+                if distance < 0.5:
+                    events.append({'type': 'player_interaction', 'frame': curr_frame['frame']})
+        
+        if ball_curr:
+            ball_x, ball_y = ball_curr['box'][:2]
+            if ball_x < 10 or ball_x > field_width - 10:
+                if 20 < ball_y < field_height - 20:
+                    events.append({'type': 'possible_goal_or_save', 'frame': curr_frame['frame'], 'team': possession_team})
+    
+    consolidated_events = []
+    for event in events:
+        if not consolidated_events or event['frame'] - consolidated_events[-1]['frame'] > cooldown_frames:
+            consolidated_events.append(event)
+        elif event['type'] != consolidated_events[-1]['type']:
+            consolidated_events.append(event)
+    
+    logger.info(f"Total events detected: {len(consolidated_events)}")
+    return consolidated_events
 
 def generate_commentary(events):
     commentary = []
@@ -164,9 +187,13 @@ def generate_commentary(events):
         if event['type'] == 'possession_change':
             commentary.append(f"Team {event['team']} gains possession at frame {event['frame']}.")
         elif event['type'] == 'pass':
-            commentary.append(f"A pass is made at frame {event['frame']} with a speed of {event['speed']:.2f} m/s.")
+            commentary.append(f"A pass is made by Team {event['team']} at frame {event['frame']} with a speed of {event['speed']:.2f} m/s.")
         elif event['type'] == 'shot':
-            commentary.append(f"A powerful shot is taken at frame {event['frame']} with a speed of {event['speed']:.2f} m/s!")
+            commentary.append(f"A powerful shot is taken by Team {event['team']} at frame {event['frame']} with a speed of {event['speed']:.2f} m/s!")
+        elif event['type'] == 'player_interaction':
+            commentary.append(f"Close player interaction at frame {event['frame']}. Possible tackle or challenge.")
+        elif event['type'] == 'possible_goal_or_save':
+            commentary.append(f"Exciting moment near the goal at frame {event['frame']}! Possible goal or save for Team {event['team']}.")
     return commentary
 
 def calculate_statistics(events, total_frames):
@@ -182,30 +209,21 @@ def calculate_statistics(events, total_frames):
             current_team = event['team']
             last_possession_change = event['frame']
         elif event['type'] == 'pass':
-            passes[event.get('team', 0)] += 1  # Default to team 0 if 'team' is not present
+            passes[event['team']] += 1
         elif event['type'] == 'shot':
-            shots[event.get('team', 0)] += 1  # Default to team 0 if 'team' is not present
+            shots[event['team']] += 1
 
     # Add the final possession duration
     team_possession[current_team] += total_frames - last_possession_change
 
     total_possession = sum(team_possession.values())
-    
-    # Handle the case where there are no possession changes
-    if total_possession == 0:
-        possession_percentages = {0: 50, 1: 50}  # Default to 50-50 if no possession data
-    else:
-        possession_percentages = {team: (count / total_possession) * 100 for team, count in team_possession.items()}
+    possession_percentages = {team: (count / total_possession) * 100 for team, count in team_possession.items()}
 
     return {
         'possession': possession_percentages,
         'passes': passes,
         'shots': shots
     }
-
-def calculate_speed(pos1, pos2, frames_difference):
-    distance = np.linalg.norm(np.array(pos1) - np.array(pos2))
-    return distance / frames_difference * 24 / 200  # Assuming 24 fps and 200 pixels = 1 meter
 
 def iou(box1, box2):
     # Calculate intersection over union
