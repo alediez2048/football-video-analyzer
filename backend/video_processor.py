@@ -19,30 +19,59 @@ def process_video(file_path):
         detections = []
         jersey_colors = []
         team_colors = None
+        ball_tracker = None
 
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
 
-            results = model.track(frame, persist=True)  # Use the track method instead of predict
+            results = model.track(frame, persist=True, conf=0.5)  # Lowered confidence threshold
             logger.info(f"Frame {frames_processed}: {len(results[0].boxes)} detections")
 
             frame_detections = []
+            ball_detected = False
             for box in results[0].boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 obj_type = model.names[int(box.cls)]
                 track_id = int(box.id) if box.id is not None else -1
+                confidence = float(box.conf)
+                
+                if obj_type == 'sports ball' and confidence > 0.3:  # Adjust confidence threshold for ball
+                    ball_detected = True
+                    if ball_tracker is None:
+                        ball_tracker = cv2.TrackerKCF_create()
+                        ball_tracker.init(frame, (x1, y1, x2-x1, y2-y1))
+                    else:
+                        success, bbox = ball_tracker.update(frame)
+                        if success:
+                            x1, y1, w, h = [int(v) for v in bbox]
+                            x2, y2 = x1 + w, y1 + h
+
                 frame_detections.append({
                     'type': obj_type,
                     'box': [x1, y1, x2, y2],
                     'id': track_id,
-                    'confidence': float(box.conf)
+                    'confidence': confidence
                 })
 
                 if obj_type == 'person':
                     jersey_color = extract_jersey_color(frame, [x1, y1, x2, y2])
                     jersey_colors.append(jersey_color)
+
+            if not ball_detected and ball_tracker is not None:
+                success, bbox = ball_tracker.update(frame)
+                if success:
+                    x1, y1, w, h = [int(v) for v in bbox]
+                    x2, y2 = x1 + w, y1 + h
+                    frame_detections.append({
+                        'type': 'sports ball',
+                        'box': [x1, y1, x2, y2],
+                        'id': -1,
+                        'confidence': 0.5
+                    })
+                else:
+                    ball_tracker = None
 
             # Perform team assignment if we have enough jersey colors
             if len(jersey_colors) >= 10 and team_colors is None:
@@ -176,13 +205,19 @@ def draw_on_frame(frame, detections):
         x1, y1, x2, y2 = map(int, obj['box'])
         if obj['type'] == 'person':
             color = (0, 255, 0) if obj.get('team') == 0 else (0, 0, 255)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(frame, f"{obj['type']} {obj.get('team', '')}", (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         elif obj['type'] == 'sports ball':
             color = (0, 165, 255)  # Orange color for the ball
+            cv2.circle(frame, ((x1+x2)//2, (y1+y2)//2), 10, color, -1)  # Draw a filled circle for the ball
+            cv2.putText(frame, "Ball", (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         else:
             color = (255, 255, 255)  # White for other objects
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(frame, f"{obj['type']} {obj.get('team', '')}", (x1, y1 - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(frame, obj['type'], (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
     return frame
 
 def generate_commentary(events):
