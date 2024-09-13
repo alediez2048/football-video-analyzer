@@ -1,5 +1,5 @@
 // frontend/src/App.js
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import ProcessedVideo from './ProcessedVideo';
 import './App.css';
@@ -12,6 +12,21 @@ function App() {
   const [processedVideoUrl, setProcessedVideoUrl] = useState(null);
   const [videoDuration, setVideoDuration] = useState(null);
   const [progress, setProgress] = useState(0);
+  const ws = useRef(null);
+
+  useEffect(() => {
+    ws.current = new WebSocket('ws://localhost:8000/ws');
+    ws.current.onmessage = (event) => {
+      const progress = JSON.parse(event.data).progress;
+      setProgress(progress);
+    };
+
+    return () => {
+      if (ws.current) {
+        ws.current.close();
+      }
+    };
+  }, []);
 
   const handleFileChange = (event) => {
     setFile(event.target.files[0]);
@@ -47,13 +62,8 @@ function App() {
     try {
       setProcessingStatus('Processing video...');
       setProgress(0);
-      
-      const estimatedDuration = videoDuration * 0.5; // Assume processing takes half the video duration
-      const stopSimulation = simulateProgress(estimatedDuration);
 
       const response = await axios.get(`http://localhost:8000/process_video/${filename}`);
-      stopSimulation();
-      setProgress(100);
 
       console.log('Response from backend:', response.data);
       if (response.data.error) {
@@ -111,7 +121,7 @@ function App() {
           </button>
           <p className="status">{uploadStatus}</p>
           <p className="status">{processingStatus}</p>
-          {progress > 0 && progress < 100 && (
+          {progress > 0 && (
             <div className="progress-bar">
               <div className="progress" style={{width: `${progress}%`}}></div>
             </div>

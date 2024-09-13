@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import shutil
@@ -34,23 +34,31 @@ async def upload_video(file: UploadFile = File(...)):
 async def process_video_endpoint(filename: str):
     file_path = f"uploads/{filename}"
     if not os.path.exists(file_path):
-        return {"message": "File not found"}
+        return {"error": "File not found"}
     
     try:
-        results = await asyncio.wait_for(asyncio.to_thread(process_video, file_path), timeout=900)  # 5 minutes timeout
-        return results  # Make sure you're returning the full results object
+        results = await asyncio.wait_for(asyncio.to_thread(process_video, file_path, app.state.websocket), timeout=900)  # 5 minutes timeout
+        return results
     except asyncio.TimeoutError:
         logger.error("Video processing timed out")
-        return {"message": "Video processing timed out"}
+        return {"error": "Video processing timed out"}
     except Exception as e:
         logger.error(f"Error processing video: {str(e)}", exc_info=True)
-        return {"message": f"Error processing video: {str(e)}"}
+        return {"error": f"Error processing video: {str(e)}"}
 
 @app.get("/processed_video/{filename}")
 async def get_processed_video(filename: str):
     video_path = f"uploads/{filename}"
     return FileResponse(video_path)
 
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    while True:
+        data = await websocket.receive_text()
+        if data == "close":
+            await websocket.close()
+            break
 
 app.add_middleware(
     CORSMiddleware,
