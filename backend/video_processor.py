@@ -2,22 +2,36 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 import logging
-import time
-from sklearn.cluster import KMeans
-from concurrent.futures import ThreadPoolExecutor
-import asyncio
 import random
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+model = YOLO('yolov8x.pt')
+
+def process_frame(frame):
+    results = model(frame)
+    detections = []
+    for r in results:
+        boxes = r.boxes.xyxy.cpu().numpy()
+        classes = r.boxes.cls.cpu().numpy()
+        confs = r.boxes.conf.cpu().numpy()
+        
+        for box, cls, conf in zip(boxes, classes, confs):
+            detections.append({
+                'type': model.names[int(cls)],
+                'box': box.tolist(),
+                'confidence': float(conf)
+            })
+    return detections
+
 async def process_video(file_path, progress_callback=None):
     try:
-        model = YOLO('yolov8x.pt')
-        logger.info(f"Model loaded successfully. Class names: {model.names}")
-        
         cap = cv2.VideoCapture(file_path)
         logger.info(f"Video file opened: {file_path}")
+        
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = int(cap.get(cv2.CAP_PROP_FPS))
         
         frames_processed = 0
         detections = []
@@ -27,17 +41,18 @@ async def process_video(file_path, progress_callback=None):
             if not ret:
                 break
             
-            results = model(frame)
-            frame_detections = process_frame(results, frames_processed)
-            
-            detections.append(frame_detections)
+            frame_detections = process_frame(frame)
+            detections.append({
+                'frame': frames_processed,
+                'detections': frame_detections
+            })
             
             frames_processed += 1
             
             if frames_processed % 100 == 0:
                 logger.info(f"Processed {frames_processed} frames")
                 if progress_callback:
-                    progress_callback(frames_processed)
+                    progress_callback(frames_processed / total_frames * 100)
         
         cap.release()
         
@@ -58,28 +73,6 @@ async def process_video(file_path, progress_callback=None):
     except Exception as e:
         logger.error(f"Error in process_video: {str(e)}", exc_info=True)
         raise
-
-def process_frame(results, frame_number):
-    frame_detections = []
-    
-    for r in results:
-        boxes = r.boxes.xyxy.cpu().numpy()
-        classes = r.boxes.cls.cpu().numpy()
-        confs = r.boxes.conf.cpu().numpy()
-        
-        for box, cls, conf in zip(boxes, classes, confs):
-            object_type = r.names[int(cls)]
-            if object_type in ['person', 'sports ball']:
-                frame_detections.append({
-                    'type': object_type,
-                    'box': box.tolist(),
-                    'confidence': float(conf)
-                })
-    
-    return {
-        'frame': frame_number,
-        'detections': frame_detections
-    }
 
 def detect_events(detections):
     events = []
@@ -109,7 +102,7 @@ def detect_events(detections):
             if ball_speed > 2:  # Lowered threshold for pass detection
                 event_type = 'shot' if ball_speed > 6 else 'pass'  # Lowered threshold for shot detection
                 if curr_frame['frame'] - last_event_frame > cooldown_frames:
-                    events.append({'type': event_type, 'frame': curr_frame['frame'], 'speed': ball_speed, 'team': possession_team})
+                    events.append({'type': event_type, 'frame': curr_frame['frame'], 'speed': ball_speed, 'team': possession_team or 0})
                     last_event_frame = curr_frame['frame']
             
             closest_player = min((d for d in curr_frame['detections'] if d['type'] == 'person'), 
@@ -118,10 +111,7 @@ def detect_events(detections):
             
             if closest_player:
                 current_possession = closest_player['box'][:2]
-                if 'team' not in closest_player:
-                    current_team = random.choice([0, 1])
-                else:
-                    current_team = closest_player['team']
+                current_team = random.choice([0, 1])  # Randomly assign team for now
                 
                 if ball_possession is None or np.linalg.norm(np.array(current_possession) - np.array(ball_possession)) > 4:
                     if possession_team is None or (current_team != possession_team and curr_frame['frame'] - last_possession_change > cooldown_frames):
@@ -136,35 +126,10 @@ def detect_events(detections):
             for player2 in players[i+1:]:
                 distance = np.linalg.norm(np.array(player1['box'][:2]) - np.array(player2['box'][:2]))
                 if distance < 0.6 and curr_frame['frame'] - last_event_frame > cooldown_frames:
-                    team1 = player1.get('team', random.choice([0, 1]))
-                    team2 = player2.get('team', random.choice([0, 1]))
-                    if team1 != team2:
-                        event_type = 'tackle'
-                    else:
-                        event_type = 'pass' if ball_speed > 2 else 'player_interaction'
-                    events.append({'type': event_type, 'frame': curr_frame['frame'], 'teams': [team1, team2]})
+                    event_type = 'player_interaction'
+                    events.append({'type': event_type, 'frame': curr_frame['frame']})
                     last_event_frame = curr_frame['frame']
-        
-        if ball_curr:
-            ball_x, ball_y = ball_curr['box'][:2]
-            if (ball_x < 15 or ball_x > field_width - 15) and 15 < ball_y < field_height - 15:
-                if curr_frame['frame'] - last_event_frame > cooldown_frames:
-                    events.append({'type': 'possible_goal_or_save', 'frame': curr_frame['frame'], 'team': possession_team})
-                    last_event_frame = curr_frame['frame']
-        
-        # Simple offside detection
-        if possession_team is not None:
-            defending_team = 1 - possession_team
-            defending_players = [p for p in players if p.get('team') == defending_team]
-            attacking_players = [p for p in players if p.get('team') == possession_team]
-            if defending_players and attacking_players:
-                last_defender = max(defending_players, key=lambda p: p['box'][0])
-                for attacker in attacking_players:
-                    if attacker['box'][0] > last_defender['box'][0] and attacker['box'][0] > ball_curr['box'][0]:
-                        events.append({'type': 'possible_offside', 'frame': curr_frame['frame'], 'team': possession_team})
-                        break
     
-    logger.info(f"Total events detected: {len(events)}")
     return events
 
 def generate_commentary(events):
@@ -176,14 +141,8 @@ def generate_commentary(events):
             commentary.append(f"A pass is made by Team {event['team']} at frame {event['frame']} with a speed of {event['speed']:.2f} m/s.")
         elif event['type'] == 'shot':
             commentary.append(f"A powerful shot is taken by Team {event['team']} at frame {event['frame']} with a speed of {event['speed']:.2f} m/s!")
-        elif event['type'] == 'tackle':
-            commentary.append(f"A tackle occurs between Team {event['teams'][0]} and Team {event['teams'][1]} at frame {event['frame']}.")
         elif event['type'] == 'player_interaction':
-            commentary.append(f"Close player interaction at frame {event['frame']}. Possible tackle or challenge.")
-        elif event['type'] == 'possible_goal_or_save':
-            commentary.append(f"Exciting moment near the goal at frame {event['frame']}! Possible goal or save for Team {event['team']}.")
-        elif event['type'] == 'possible_offside':
-            commentary.append(f"Possible offside at frame {event['frame']} for Team {event['team']}.")
+            commentary.append(f"Close player interaction at frame {event['frame']}.")
     return commentary
 
 def calculate_statistics(events, total_frames):
@@ -200,15 +159,16 @@ def calculate_statistics(events, total_frames):
             current_team = event['team']
             last_possession_change = event['frame']
         elif event['type'] == 'pass':
-            passes[event.get('team', 0)] += 1
+            passes[event['team']] += 1
         elif event['type'] == 'shot':
-            shots[event.get('team', 0)] += 1
+            shots[event['team']] += 1
 
     # Add the final possession duration
     if current_team is not None:
         team_possession[current_team] += total_frames - last_possession_change
-    else:
-        # If no possession changes were detected, split possession equally
+    
+    # If no possession changes were detected, split possession equally
+    if sum(team_possession.values()) == 0:
         team_possession = {0: total_frames / 2, 1: total_frames / 2}
 
     total_possession = sum(team_possession.values())
@@ -219,34 +179,3 @@ def calculate_statistics(events, total_frames):
         'passes': passes,
         'shots': shots
     }
-
-def iou(box1, box2):
-    # Calculate intersection over union
-    x1 = max(box1[0], box2[0])
-    y1 = max(box1[1], box2[1])
-    x2 = min(box1[2], box2[2])
-    y2 = min(box1[3], box2[3])
-    
-    intersection = max(0, x2 - x1) * max(0, y2 - y1)
-    area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
-    area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
-    
-    iou = intersection / float(area1 + area2 - intersection)
-    return iou
-
-def extract_jersey_color(frame, box):
-    x1, y1, x2, y2 = map(int, box)
-    player_img = frame[y1:y2, x1:x2]
-    player_img = cv2.resize(player_img, (50, 50))  # Resize for consistency
-    player_img = player_img.reshape((-1, 3))
-    player_img = np.float32(player_img)
-    
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-    K = 2
-    _, label, center = cv2.kmeans(player_img, K, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
-    
-    center = np.uint8(center)
-    res = center[label.flatten()]
-    dominant_color = res.reshape((50, 50, 3))
-    
-    return dominant_color[0][0]  # Return the most dominant color

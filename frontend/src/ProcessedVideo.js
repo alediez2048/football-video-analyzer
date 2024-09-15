@@ -12,6 +12,10 @@ const ProcessedVideo = ({ videoUrl, detections }) => {
     const drawDetections = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+      if (!detections || detections.length === 0) {
+        return;  // Exit if there are no detections
+      }
+
       const currentTime = Math.floor(video.currentTime * 24); // Assuming 24 fps
       const currentFrame = detections.find(d => d.frame === currentTime);
       
